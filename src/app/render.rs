@@ -693,38 +693,47 @@ pub(super) fn draw_diff_files(frame: &mut Frame<'_>, app: &AppState, area: Rect)
                 .into_iter()
                 .map(|entry| {
                     let indent = "  ".repeat(entry.depth);
-                    let viewed_state = entry.file_index.and_then(|file_index| {
-                        viewed_files?
+                    let Some(file_index) = entry.file_index else {
+                        let label = Line::from(format!("{indent}▾ {}", entry.label));
+                        return Row::new(diff_tree_row_cells(label, entry.stats))
+                            .style(active_theme().panel().fg(active_theme().success));
+                    };
+                    let viewed_state = viewed_files.map(|viewed_files| {
+                        viewed_files
                             .files
                             .get(&diff_display_path(&diff.files[file_index]))
                             .copied()
+                            .unwrap_or(FileViewedState::Unviewed)
                     });
-                    let (marker, style) = match (entry.file_index, viewed_state) {
-                        (Some(_), Some(FileViewedState::Viewed)) => (" ", active_theme().muted()),
-                        (Some(_), _) => (" ", active_theme().panel()),
-                        (None, _) => ("▾ ", active_theme().panel().fg(active_theme().success)),
+                    let style = if viewed_state == Some(FileViewedState::Viewed) {
+                        active_theme().muted()
+                    } else {
+                        active_theme().panel()
                     };
-                    let label = format!("{indent}{marker}{}", entry.label);
-                    Row::new(diff_tree_row_cells(label, entry.stats, viewed_state)).style(style)
+                    let label = Line::from(vec![
+                        Span::raw(indent),
+                        viewed_mark(viewed_state),
+                        Span::raw(entry.label),
+                    ]);
+                    Row::new(diff_tree_row_cells(label, entry.stats)).style(style)
                 })
                 .collect::<Vec<_>>()
         }
         Some(DiffState::Error(error)) => {
             title = "Files | error".to_string();
             vec![
-                Row::new(diff_tree_row_cells(compact_error_label(error), None, None))
-                    .style(active_theme().panel().fg(active_theme().error)),
+                Row::new(diff_tree_row_cells(
+                    Line::from(compact_error_label(error)),
+                    None,
+                ))
+                .style(active_theme().panel().fg(active_theme().error)),
             ]
         }
         Some(DiffState::Loading) | None => {
             title = "Files | loading".to_string();
             vec![
-                Row::new(diff_tree_row_cells(
-                    "loading diff...".to_string(),
-                    None,
-                    None,
-                ))
-                .style(active_theme().muted()),
+                Row::new(diff_tree_row_cells(Line::from("loading diff..."), None))
+                    .style(active_theme().muted()),
             ]
         }
     };
@@ -757,11 +766,7 @@ pub(super) fn draw_diff_files(frame: &mut Frame<'_>, app: &AppState, area: Rect)
     frame.render_stateful_widget(table, area, &mut table_state);
 }
 
-fn diff_tree_row_cells(
-    label: String,
-    stats: Option<DiffFileStats>,
-    viewed_state: Option<FileViewedState>,
-) -> Vec<Cell<'static>> {
+fn diff_tree_row_cells(label: Line<'static>, stats: Option<DiffFileStats>) -> Vec<Cell<'static>> {
     let Some(stats) = stats else {
         return vec![
             Cell::from(label),
@@ -783,18 +788,20 @@ fn diff_tree_row_cells(
         } else {
             String::new()
         }),
-        viewed_state_cell(viewed_state),
+        Cell::from(""),
     ]
 }
 
-fn viewed_state_cell(viewed_state: Option<FileViewedState>) -> Cell<'static> {
+fn viewed_mark(viewed_state: Option<FileViewedState>) -> Span<'static> {
     match viewed_state {
         Some(FileViewedState::Viewed) => {
-            right_aligned_cell("viewed".to_string()).style(active_theme().muted())
+            Span::styled("[x] ", Style::default().fg(active_theme().success))
         }
-        Some(FileViewedState::Dismissed) => right_aligned_cell("changed".to_string())
-            .style(Style::default().fg(active_theme().warning)),
-        Some(FileViewedState::Unviewed) | None => Cell::from(""),
+        Some(FileViewedState::Dismissed) => {
+            Span::styled("[~] ", Style::default().fg(active_theme().warning))
+        }
+        Some(FileViewedState::Unviewed) => Span::raw("[ ] "),
+        None => Span::raw("    "),
     }
 }
 

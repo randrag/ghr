@@ -3220,7 +3220,7 @@ fn user_refresh_reloads_viewed_files() {
 }
 
 #[test]
-fn diff_file_list_shows_viewed_and_changed_files() {
+fn diff_file_list_marks_viewed_and_changed_files_left_of_name() {
     let app = diff_app_with_viewed_files(&[
         ("src/app.rs", FileViewedState::Viewed),
         ("src/github.rs", FileViewedState::Dismissed),
@@ -3242,12 +3242,36 @@ fn diff_file_list_shows_viewed_and_changed_files() {
         .find(|line| line.contains("github.rs"))
         .expect("github row");
     assert!(lines[0].contains("1/2 viewed"), "title: {:?}", lines[0]);
-    assert!(app_row.contains("viewed"), "app row: {app_row:?}");
-    assert!(github_row.contains("changed"), "github row: {github_row:?}");
+    assert!(app_row.contains("[x] app.rs"), "app row: {app_row:?}");
+    assert!(
+        github_row.contains("[~] github.rs"),
+        "github row: {github_row:?}"
+    );
 }
 
 #[test]
-fn diff_file_list_title_omits_viewed_count_until_loaded() {
+fn diff_file_list_marks_unviewed_files_with_empty_box() {
+    let app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Viewed)]);
+    let backend = ratatui::backend::TestBackend::new(90, 10);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+
+    terminal
+        .draw(|frame| draw_diff_files(frame, &app, frame.area()))
+        .expect("draw");
+
+    let lines = buffer_lines(terminal.backend().buffer());
+    let github_row = lines
+        .iter()
+        .find(|line| line.contains("github.rs"))
+        .expect("github row");
+    assert!(
+        github_row.contains("[ ] github.rs"),
+        "github row: {github_row:?}"
+    );
+}
+
+#[test]
+fn diff_file_list_omits_viewed_count_and_boxes_until_loaded() {
     let mut app = diff_app_with_viewed_files(&[]);
     app.viewed_files
         .insert("1".to_string(), ViewedFilesState::Loading);
@@ -3260,6 +3284,10 @@ fn diff_file_list_title_omits_viewed_count_until_loaded() {
 
     let lines = buffer_lines(terminal.backend().buffer());
     assert!(!lines[0].contains("viewed"), "title: {:?}", lines[0]);
+    assert!(
+        !lines.iter().any(|line| line.contains("[ ]")),
+        "no boxes before viewed state loads: {lines:?}"
+    );
 }
 
 #[test]
