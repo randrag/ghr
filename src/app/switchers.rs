@@ -1074,6 +1074,7 @@ impl AppState {
         self.details.clear();
         self.details_refreshed_at.clear();
         self.diffs.clear();
+        self.viewed_files.clear();
         self.commits.clear();
         self.action_hints.clear();
         self.action_hints_stale.clear();

@@ -832,6 +832,29 @@ pub(super) fn start_reaction_submit(
     });
 }
 
+pub(super) fn start_viewed_files_load(item: WorkItem, tx: UnboundedSender<AppMsg>) {
+    tokio::spawn(async move {
+        let item_id = item.id.clone();
+        let result = match item.number {
+            Some(number) => fetch_pull_request_file_viewed_states(&item.repo, number)
+                .await
+                .map_err(error_chain_message),
+            None => Err("selected item has no pull request number".to_string()),
+        };
+        let _ = tx.send(AppMsg::ViewedFilesLoaded { item_id, result });
+    });
+}
+
+pub(super) fn start_file_viewed_update(update: FileViewedUpdate, tx: UnboundedSender<AppMsg>) {
+    tokio::spawn(async move {
+        let result =
+            set_pull_request_file_viewed(&update.pull_request_id, &update.path, update.viewed)
+                .await
+                .map_err(error_chain_message);
+        let _ = tx.send(AppMsg::FileViewedUpdated { update, result });
+    });
+}
+
 pub(super) fn start_review_thread_resolution_update(
     item: WorkItem,
     comment_index: usize,

@@ -4663,6 +4663,7 @@ pub(super) fn help_dialog_content(command_palette_key: &str) -> Vec<Line<'static
         help_key_line("PgDown/PgUp", "move by visible file page"),
         help_key_line("h / l", "page diff down/up across files"),
         help_key_line("[ / ]", "previous / next changed file"),
+        help_key_line("Space", "toggle GitHub's Viewed mark on the selected file"),
         help_key_line("Enter or 4", "focus the file diff"),
         help_key_line("c", "add review comment on selected diff line"),
         help_key_line("i", "toggle inline review comments in diff"),
@@ -4702,6 +4703,10 @@ pub(super) fn help_dialog_content(command_palette_key: &str) -> Vec<Line<'static
         help_key_line("[ / ]", "jump previous / next diff file"),
         help_key_line("m in diff", "begin a review range"),
         help_key_line("e in diff", "end the review range"),
+        help_key_line(
+            "Space in diff",
+            "toggle GitHub's Viewed mark on the current file",
+        ),
         help_key_line(
             "single click in diff",
             "select line, or end a pending range",

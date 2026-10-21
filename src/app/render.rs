@@ -662,12 +662,23 @@ pub(super) fn draw_diff_files(frame: &mut Frame<'_>, app: &AppState, area: Rect)
     let mut selected_row = None;
     let rows = match app.current_diff() {
         Some(DiffState::Loaded(diff)) => {
-            title = format!(
-                "Files | {} file(s) | +{} -{}",
-                diff.files.len(),
-                diff.additions,
-                diff.deletions
-            );
+            let viewed_files = app.current_viewed_files();
+            title = match viewed_files {
+                Some(viewed_files) => format!(
+                    "Files | {} file(s) | +{} -{} | {}/{} viewed",
+                    diff.files.len(),
+                    diff.additions,
+                    diff.deletions,
+                    viewed_file_count(diff, viewed_files),
+                    diff.files.len()
+                ),
+                None => format!(
+                    "Files | {} file(s) | +{} -{}",
+                    diff.files.len(),
+                    diff.additions,
+                    diff.deletions
+                ),
+            };
             let comment_counts = app
                 .current_item()
                 .and_then(|item| app.diff_comments_for_item(&item.id))
@@ -682,28 +693,38 @@ pub(super) fn draw_diff_files(frame: &mut Frame<'_>, app: &AppState, area: Rect)
                 .into_iter()
                 .map(|entry| {
                     let indent = "  ".repeat(entry.depth);
-                    let (marker, style) = if entry.file_index.is_some() {
-                        (" ", active_theme().panel())
-                    } else {
-                        ("▾ ", active_theme().panel().fg(active_theme().success))
+                    let viewed_state = entry.file_index.and_then(|file_index| {
+                        viewed_files?
+                            .files
+                            .get(&diff_display_path(&diff.files[file_index]))
+                            .copied()
+                    });
+                    let (marker, style) = match (entry.file_index, viewed_state) {
+                        (Some(_), Some(FileViewedState::Viewed)) => (" ", active_theme().muted()),
+                        (Some(_), _) => (" ", active_theme().panel()),
+                        (None, _) => ("▾ ", active_theme().panel().fg(active_theme().success)),
                     };
                     let label = format!("{indent}{marker}{}", entry.label);
-                    Row::new(diff_tree_row_cells(label, entry.stats)).style(style)
+                    Row::new(diff_tree_row_cells(label, entry.stats, viewed_state)).style(style)
                 })
                 .collect::<Vec<_>>()
         }
         Some(DiffState::Error(error)) => {
             title = "Files | error".to_string();
             vec![
-                Row::new(diff_tree_row_cells(compact_error_label(error), None))
+                Row::new(diff_tree_row_cells(compact_error_label(error), None, None))
                     .style(active_theme().panel().fg(active_theme().error)),
             ]
         }
         Some(DiffState::Loading) | None => {
             title = "Files | loading".to_string();
             vec![
-                Row::new(diff_tree_row_cells("loading diff...".to_string(), None))
-                    .style(active_theme().muted()),
+                Row::new(diff_tree_row_cells(
+                    "loading diff...".to_string(),
+                    None,
+                    None,
+                ))
+                .style(active_theme().muted()),
             ]
         }
     };
@@ -736,7 +757,11 @@ pub(super) fn draw_diff_files(frame: &mut Frame<'_>, app: &AppState, area: Rect)
     frame.render_stateful_widget(table, area, &mut table_state);
 }
 
-fn diff_tree_row_cells(label: String, stats: Option<DiffFileStats>) -> Vec<Cell<'static>> {
+fn diff_tree_row_cells(
+    label: String,
+    stats: Option<DiffFileStats>,
+    viewed_state: Option<FileViewedState>,
+) -> Vec<Cell<'static>> {
     let Some(stats) = stats else {
         return vec![
             Cell::from(label),
@@ -758,8 +783,19 @@ fn diff_tree_row_cells(label: String, stats: Option<DiffFileStats>) -> Vec<Cell<
         } else {
             String::new()
         }),
-        Cell::from(""),
+        viewed_state_cell(viewed_state),
     ]
+}
+
+fn viewed_state_cell(viewed_state: Option<FileViewedState>) -> Cell<'static> {
+    match viewed_state {
+        Some(FileViewedState::Viewed) => {
+            right_aligned_cell("viewed".to_string()).style(active_theme().muted())
+        }
+        Some(FileViewedState::Dismissed) => right_aligned_cell("changed".to_string())
+            .style(Style::default().fg(active_theme().warning)),
+        Some(FileViewedState::Unviewed) | None => Cell::from(""),
+    }
 }
 
 fn right_aligned_cell(text: String) -> Cell<'static> {
@@ -1456,6 +1492,7 @@ pub(super) fn footer_focus_primary_shortcuts(app: &AppState) -> Vec<Span<'static
                 push_footer_pair(&mut spans, "V", "commits", Color::LightMagenta);
                 push_footer_pair(&mut spans, "esc", "back", Color::Cyan);
                 push_footer_pair(&mut spans, "[ ]", "file", Color::Cyan);
+                push_footer_pair(&mut spans, "space", "viewed", Color::Green);
                 push_footer_pair(&mut spans, "i", "comments", Color::Yellow);
                 push_footer_pair(&mut spans, "c", "inline", Color::LightBlue);
                 push_footer_pair(&mut spans, "a", "comment", Color::LightBlue);
@@ -1489,6 +1526,7 @@ pub(super) fn footer_focus_primary_shortcuts(app: &AppState) -> Vec<Span<'static
                 push_footer_pair(&mut spans, "V", "commits", Color::LightMagenta);
                 push_footer_pair(&mut spans, "n/p", "comment", Color::LightBlue);
                 push_footer_pair(&mut spans, "h/l", "page", Color::Cyan);
+                push_footer_pair(&mut spans, "space", "viewed", Color::Green);
                 push_footer_pair(&mut spans, "i", "comments", Color::Yellow);
                 push_footer_pair(&mut spans, "c", "inline", Color::LightBlue);
                 push_footer_pair(&mut spans, "a", "comment", Color::LightBlue);

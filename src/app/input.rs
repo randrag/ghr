@@ -726,6 +726,9 @@ pub(super) fn handle_key_in_area_mut(
             }
             KeyCode::Char(']') if app.details_mode == DetailsMode::Diff => app.move_diff_file(1),
             KeyCode::Char('[') if app.details_mode == DetailsMode::Diff => app.move_diff_file(-1),
+            KeyCode::Char(' ') if app.details_mode == DetailsMode::Diff => {
+                app.toggle_selected_diff_file_viewed(tx)
+            }
             KeyCode::Down | KeyCode::Char('j') if app.details_mode == DetailsMode::Diff => {
                 app.move_diff_line(1, area)
             }
@@ -910,6 +913,7 @@ pub(super) fn handle_diff_file_list_key(
         KeyCode::Char('Y') => {
             app.start_reviewer_dialog_with_store(ReviewerAction::Remove, Some(store), Some(tx))
         }
+        KeyCode::Char(' ') => app.toggle_selected_diff_file_viewed(tx),
         KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('n') => app.move_diff_file(1),
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('p') => app.move_diff_file(-1),
         KeyCode::PageDown | KeyCode::Char('d') => {

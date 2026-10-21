@@ -97,6 +97,22 @@ pub struct CommentFetchResult {
     pub comments: Vec<CommentPreview>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FileViewedState {
+    Viewed,
+    // GitHub's state for a file marked viewed that changed after it was marked.
+    Dismissed,
+    #[serde(other)]
+    Unviewed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestFileViewedStates {
+    pub pull_request_id: String,
+    pub files: HashMap<String, FileViewedState>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemDetailsMetadata {
     pub title: Option<String>,
@@ -572,6 +588,50 @@ struct IssueCommentPermissionConnectionRaw {
 struct IssueCommentPermissionRaw {
     database_id: Option<u64>,
     viewer_can_update: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestFileViewedStatesGraphQlRaw {
+    data: PullRequestFileViewedStatesDataRaw,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestFileViewedStatesDataRaw {
+    repository: Option<PullRequestFileViewedStatesRepositoryRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestFileViewedStatesRepositoryRaw {
+    pull_request: Option<PullRequestFileViewedStatesPullRequestRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestFileViewedStatesPullRequestRaw {
+    id: String,
+    files: Option<PullRequestChangedFileConnectionRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestChangedFileConnectionRaw {
+    nodes: Option<Vec<PullRequestChangedFileRaw>>,
+    page_info: GraphQlPageInfoRaw,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestChangedFileRaw {
+    path: String,
+    viewer_viewed_state: FileViewedState,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PullRequestFileViewedStatesPage {
+    pull_request_id: String,
+    files: Vec<(String, FileViewedState)>,
+    has_next_page: bool,
+    end_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3431,6 +3491,118 @@ mutation($threadId: ID!) {
     Ok(())
 }
 
+pub async fn fetch_pull_request_file_viewed_states(
+    repository: &str,
+    number: u64,
+) -> Result<PullRequestFileViewedStates> {
+    let (owner, name) = split_repository(repository)?;
+    let query = r#"
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      files(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          path
+          viewerViewedState
+        }
+      }
+    }
+  }
+}
+"#;
+    let mut cursor = None;
+    let mut pull_request_id;
+    let mut files = HashMap::new();
+
+    loop {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={query}"),
+            "-F".to_string(),
+            format!("owner={owner}"),
+            "-F".to_string(),
+            format!("name={name}"),
+            "-F".to_string(),
+            format!("number={number}"),
+        ];
+        if let Some(cursor) = &cursor {
+            args.push("-F".to_string());
+            args.push(format!("cursor={cursor}"));
+        }
+
+        let output = run_gh_json(&args).await?;
+        let page = parse_pull_request_file_viewed_states_page(&output, repository, number)?;
+        pull_request_id = page.pull_request_id;
+        files.extend(page.files);
+        if !page.has_next_page {
+            break;
+        }
+        let Some(next_cursor) = page.end_cursor else {
+            break;
+        };
+        cursor = Some(next_cursor);
+    }
+
+    Ok(PullRequestFileViewedStates {
+        pull_request_id,
+        files,
+    })
+}
+
+pub async fn set_pull_request_file_viewed(
+    pull_request_id: &str,
+    path: &str,
+    viewed: bool,
+) -> Result<()> {
+    if pull_request_id.trim().is_empty() {
+        bail!("pull request id is required");
+    }
+    let (mutation, action) = if viewed {
+        (
+            r#"
+mutation($pullRequestId: ID!, $path: String!) {
+  markFileAsViewed(input: {pullRequestId: $pullRequestId, path: $path}) {
+    clientMutationId
+  }
+}
+"#,
+            "mark",
+        )
+    } else {
+        (
+            r#"
+mutation($pullRequestId: ID!, $path: String!) {
+  unmarkFileAsViewed(input: {pullRequestId: $pullRequestId, path: $path}) {
+    clientMutationId
+  }
+}
+"#,
+            "unmark",
+        )
+    };
+
+    run_gh_json(&[
+        "api".to_string(),
+        "graphql".to_string(),
+        "-f".to_string(),
+        format!("query={mutation}"),
+        "-F".to_string(),
+        format!("pullRequestId={pull_request_id}"),
+        "-f".to_string(),
+        format!("path={path}"),
+    ])
+    .await
+    .with_context(|| format!("failed to {action} {path} as viewed"))?;
+    Ok(())
+}
+
 pub async fn edit_item_metadata(
     repository: &str,
     number: u64,
@@ -4162,6 +4334,42 @@ fn parse_issue_linked_pull_requests_page(
         connection.page_info.has_next_page,
         connection.page_info.end_cursor,
     ))
+}
+
+fn parse_pull_request_file_viewed_states_page(
+    output: &str,
+    repository: &str,
+    number: u64,
+) -> Result<PullRequestFileViewedStatesPage> {
+    let raw = serde_json::from_str::<PullRequestFileViewedStatesGraphQlRaw>(output)
+        .with_context(|| format!("failed to parse viewed files for {repository}#{number}"))?;
+    let Some(pull_request) = raw
+        .data
+        .repository
+        .and_then(|repository| repository.pull_request)
+    else {
+        bail!("pull request {repository}#{number} not found");
+    };
+    let (files, has_next_page, end_cursor) = match pull_request.files {
+        Some(connection) => (
+            connection
+                .nodes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|file| (file.path, file.viewer_viewed_state))
+                .collect(),
+            connection.page_info.has_next_page,
+            connection.page_info.end_cursor,
+        ),
+        None => (Vec::new(), false, None),
+    };
+
+    Ok(PullRequestFileViewedStatesPage {
+        pull_request_id: pull_request.id,
+        files,
+        has_next_page,
+        end_cursor,
+    })
 }
 
 fn linked_pull_request_from_raw(raw: IssueLinkedPullRequestRaw) -> LinkedPullRequest {
@@ -6531,6 +6739,79 @@ mod tests {
             parse_subscribable_id(output, "chenyukang/ghr", 1, ItemKind::Issue).unwrap(),
             "I_kwDOSSH5Ns7TAAAB"
         );
+    }
+
+    #[test]
+    fn parse_pull_request_file_viewed_states_page_reads_each_file_state() {
+        let output = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kwDOtest",
+                        "files": {
+                            "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29yOjEwMA==" },
+                            "nodes": [
+                                { "path": "src/app.rs", "viewerViewedState": "VIEWED" },
+                                { "path": "src/github.rs", "viewerViewedState": "UNVIEWED" },
+                                { "path": "README.md", "viewerViewedState": "DISMISSED" }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let page = parse_pull_request_file_viewed_states_page(output, "chenyukang/ghr", 1).unwrap();
+
+        assert_eq!(
+            page,
+            PullRequestFileViewedStatesPage {
+                pull_request_id: "PR_kwDOtest".to_string(),
+                files: vec![
+                    ("src/app.rs".to_string(), FileViewedState::Viewed),
+                    ("src/github.rs".to_string(), FileViewedState::Unviewed),
+                    ("README.md".to_string(), FileViewedState::Dismissed),
+                ],
+                has_next_page: true,
+                end_cursor: Some("Y3Vyc29yOjEwMA==".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_pull_request_file_viewed_states_page_treats_unknown_state_as_unviewed() {
+        let output = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kwDOtest",
+                        "files": {
+                            "pageInfo": { "hasNextPage": false, "endCursor": null },
+                            "nodes": [
+                                { "path": "src/app.rs", "viewerViewedState": "SOMETHING_NEW" }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let page = parse_pull_request_file_viewed_states_page(output, "chenyukang/ghr", 1).unwrap();
+
+        assert_eq!(
+            page.files,
+            vec![("src/app.rs".to_string(), FileViewedState::Unviewed)]
+        );
+    }
+
+    #[test]
+    fn parse_pull_request_file_viewed_states_page_rejects_missing_pull_request() {
+        let output = r#"{ "data": { "repository": { "pullRequest": null } } }"#;
+
+        let error =
+            parse_pull_request_file_viewed_states_page(output, "chenyukang/ghr", 7).unwrap_err();
+
+        assert!(error.to_string().contains("chenyukang/ghr#7 not found"));
     }
 
     #[test]

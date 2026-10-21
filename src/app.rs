@@ -66,6 +66,10 @@ use crate::github::{
     update_issue_assignees, update_item_subscription, update_pull_request_branch,
     with_background_github_priority,
 };
+use crate::github::{
+    FileViewedState, PullRequestFileViewedStates, fetch_pull_request_file_viewed_states,
+    set_pull_request_file_viewed,
+};
 #[cfg(test)]
 use crate::model::PullRequestCommitActivityPreview;
 use crate::model::{
@@ -107,6 +111,7 @@ mod status;
 mod switchers;
 mod tasks;
 mod text;
+mod viewed_files;
 
 use command_palette::{
     CommandPalette, PaletteAction, PaletteCommand, command_palette_area, command_palette_commands,
@@ -158,6 +163,7 @@ use tasks::*;
 use text::{
     display_width, display_width_char, expand_tabs, normalize_text, truncate_inline, truncate_text,
 };
+use viewed_files::*;
 
 const NO_SELECTED_COMMENT_INDEX: usize = usize::MAX;
 const NO_SELECTED_CHECK_RUN_INDEX: usize = usize::MAX;
@@ -202,6 +208,14 @@ enum AppMsg {
         item_id: String,
         selection: Option<CommitSelection>,
         diff: std::result::Result<PullRequestDiff, String>,
+    },
+    ViewedFilesLoaded {
+        item_id: String,
+        result: std::result::Result<PullRequestFileViewedStates, String>,
+    },
+    FileViewedUpdated {
+        update: FileViewedUpdate,
+        result: std::result::Result<(), String>,
     },
     CommentPosted {
         item_id: String,
@@ -1691,6 +1705,8 @@ struct AppState {
     details_refreshed_at: HashMap<String, DateTime<Utc>>,
     optimistic_comment_ids: HashMap<String, HashSet<u64>>,
     diffs: HashMap<String, DiffState>,
+    viewed_files: HashMap<String, ViewedFilesState>,
+    viewed_file_updates: HashSet<(String, String)>,
     commits: HashMap<String, CommitsState>,
     selected_commits: HashMap<String, CommitSelection>,
     commit_picker: Option<CommitPicker>,
@@ -3242,6 +3258,8 @@ impl AppState {
             details_refreshed_at: HashMap::new(),
             optimistic_comment_ids: HashMap::new(),
             diffs: HashMap::new(),
+            viewed_files: HashMap::new(),
+            viewed_file_updates: HashSet::new(),
             commits: HashMap::new(),
             selected_commits: ui_state.selected_commits.clone(),
             commit_picker: None,
@@ -4183,6 +4201,12 @@ impl AppState {
             } => {
                 self.finish_diff_load(item_id, selection, diff);
             }
+            AppMsg::ViewedFilesLoaded { item_id, result } => {
+                self.finish_viewed_files_load(item_id, result);
+            }
+            AppMsg::FileViewedUpdated { update, result } => {
+                self.finish_file_viewed_update(update, result);
+            }
             AppMsg::CommentPosted { item_id, result } => match result {
                 Ok(comment) => {
                     self.remember_optimistic_comment(&item_id, &comment);
@@ -4878,6 +4902,7 @@ impl AppState {
                         self.details_stale.insert(item_id.clone());
                         self.mark_action_hints_stale(item_id.clone());
                         self.diffs.remove(&item_id);
+                        self.forget_viewed_files_unless_loading(&item_id);
                         self.mark_item_after_pr_action(&item_id, action);
                         self.status = if action == PrAction::Merge {
                             format!(
@@ -6934,8 +6959,9 @@ impl AppState {
         if self.selected_commits.contains_key(&item.id) {
             self.ensure_commits_loading(Some(tx));
         }
+        let viewed_files_loading = self.ensure_viewed_files_loading(&item, tx);
         if self.diffs.contains_key(&self.diff_scope_key(&item.id)) {
-            return false;
+            return viewed_files_loading;
         }
 
         let selection = self.selected_commits.get(&item.id).cloned();
@@ -12830,6 +12856,7 @@ impl AppState {
         if !matches!(self.diffs.get(&diff_key), Some(DiffState::Loading)) {
             self.diffs.remove(&diff_key);
         }
+        self.forget_viewed_files_unless_loading(&item.id);
         self.mark_action_hints_stale(item.id);
     }
 

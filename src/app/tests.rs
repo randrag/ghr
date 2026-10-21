@@ -3029,6 +3029,222 @@ diff --git a/src/github.rs b/src/github.rs
 }
 
 #[test]
+fn space_in_diff_file_list_reports_viewed_state_still_loading() {
+    let mut app = diff_app_with_viewed_files(&[]);
+    app.viewed_files
+        .insert("1".to_string(), ViewedFilesState::Loading);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let config = Config::default();
+    let store = SnapshotStore::new(std::path::PathBuf::from("/tmp/ghr-test-unused.db"));
+
+    assert!(!handle_key(
+        &mut app,
+        key(KeyCode::Char(' ')),
+        &config,
+        &store,
+        &tx
+    ));
+
+    assert_eq!(app.status, "viewed state still loading");
+}
+
+#[test]
+fn space_in_diff_details_reports_viewed_state_still_loading() {
+    let mut app = diff_app_with_viewed_files(&[]);
+    app.viewed_files
+        .insert("1".to_string(), ViewedFilesState::Loading);
+    app.focus_details();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let config = Config::default();
+    let store = SnapshotStore::new(std::path::PathBuf::from("/tmp/ghr-test-unused.db"));
+
+    assert!(!handle_key(
+        &mut app,
+        key(KeyCode::Char(' ')),
+        &config,
+        &store,
+        &tx
+    ));
+
+    assert_eq!(app.status, "viewed state still loading");
+}
+
+#[test]
+fn viewed_toggle_marks_unviewed_file_viewed_before_github_confirms() {
+    let mut app = diff_app_with_viewed_files(&[]);
+
+    let update = app
+        .begin_selected_diff_file_viewed_toggle()
+        .expect("viewed update");
+
+    assert_eq!(
+        update,
+        FileViewedUpdate {
+            item_id: "1".to_string(),
+            pull_request_id: "PR_test".to_string(),
+            path: "src/app.rs".to_string(),
+            viewed: true,
+            previous: FileViewedState::Unviewed,
+        }
+    );
+    assert_eq!(
+        app.current_viewed_files()
+            .and_then(|viewed| viewed.files.get("src/app.rs")),
+        Some(&FileViewedState::Viewed)
+    );
+    assert_eq!(app.status, "marking src/app.rs as viewed");
+}
+
+#[test]
+fn viewed_toggle_unmarks_viewed_file() {
+    let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Viewed)]);
+
+    let update = app
+        .begin_selected_diff_file_viewed_toggle()
+        .expect("viewed update");
+
+    assert!(!update.viewed);
+    assert_eq!(update.previous, FileViewedState::Viewed);
+    assert_eq!(
+        app.current_viewed_files()
+            .and_then(|viewed| viewed.files.get("src/app.rs")),
+        Some(&FileViewedState::Unviewed)
+    );
+}
+
+#[test]
+fn viewed_toggle_marks_file_changed_since_viewed_as_viewed_again() {
+    let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Dismissed)]);
+
+    let update = app
+        .begin_selected_diff_file_viewed_toggle()
+        .expect("viewed update");
+
+    assert!(update.viewed);
+    assert_eq!(update.previous, FileViewedState::Dismissed);
+}
+
+#[test]
+fn viewed_toggle_waits_for_running_update_on_same_file() {
+    let mut app = diff_app_with_viewed_files(&[]);
+    app.begin_selected_diff_file_viewed_toggle()
+        .expect("first viewed update");
+
+    assert_eq!(app.begin_selected_diff_file_viewed_toggle(), None);
+    assert_eq!(app.status, "viewed update already running for src/app.rs");
+}
+
+#[test]
+fn viewed_update_success_keeps_new_state_and_allows_next_toggle() {
+    let mut app = diff_app_with_viewed_files(&[]);
+    let update = app
+        .begin_selected_diff_file_viewed_toggle()
+        .expect("viewed update");
+
+    app.handle_msg(AppMsg::FileViewedUpdated {
+        update,
+        result: Ok(()),
+    });
+
+    assert_eq!(
+        app.current_viewed_files()
+            .and_then(|viewed| viewed.files.get("src/app.rs")),
+        Some(&FileViewedState::Viewed)
+    );
+    assert_eq!(app.status, "marked src/app.rs as viewed");
+    assert!(app.begin_selected_diff_file_viewed_toggle().is_some());
+}
+
+#[test]
+fn viewed_update_failure_restores_previous_state_and_shows_error() {
+    let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Dismissed)]);
+    let update = app
+        .begin_selected_diff_file_viewed_toggle()
+        .expect("viewed update");
+
+    app.handle_msg(AppMsg::FileViewedUpdated {
+        update,
+        result: Err("GraphQL: Something went wrong".to_string()),
+    });
+
+    assert_eq!(
+        app.current_viewed_files()
+            .and_then(|viewed| viewed.files.get("src/app.rs")),
+        Some(&FileViewedState::Dismissed)
+    );
+    assert!(app.message_dialog.is_some());
+    assert!(
+        app.status
+            .starts_with("viewed update failed for src/app.rs")
+    );
+}
+
+#[test]
+fn viewed_files_load_error_blocks_toggle_with_retry_hint() {
+    let mut app = diff_app_with_viewed_files(&[]);
+
+    app.handle_msg(AppMsg::ViewedFilesLoaded {
+        item_id: "1".to_string(),
+        result: Err("network down".to_string()),
+    });
+
+    assert_eq!(app.begin_selected_diff_file_viewed_toggle(), None);
+    assert!(app.status.contains("press r to retry"));
+}
+
+#[test]
+fn user_refresh_reloads_viewed_files() {
+    let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Viewed)]);
+
+    app.mark_current_details_stale_for_user_refresh();
+
+    assert!(!app.viewed_files.contains_key("1"));
+}
+
+#[test]
+fn diff_file_list_shows_viewed_and_changed_files() {
+    let app = diff_app_with_viewed_files(&[
+        ("src/app.rs", FileViewedState::Viewed),
+        ("src/github.rs", FileViewedState::Dismissed),
+    ]);
+    let backend = ratatui::backend::TestBackend::new(90, 10);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+
+    terminal
+        .draw(|frame| draw_diff_files(frame, &app, frame.area()))
+        .expect("draw");
+
+    let lines = buffer_lines(terminal.backend().buffer());
+    let app_row = lines
+        .iter()
+        .find(|line| line.contains("app.rs"))
+        .expect("app row");
+    let github_row = lines
+        .iter()
+        .find(|line| line.contains("github.rs"))
+        .expect("github row");
+    assert!(lines[0].contains("1/2 viewed"), "title: {:?}", lines[0]);
+    assert!(app_row.contains("viewed"), "app row: {app_row:?}");
+    assert!(github_row.contains("changed"), "github row: {github_row:?}");
+}
+
+#[test]
+fn diff_file_list_title_omits_viewed_count_until_loaded() {
+    let mut app = diff_app_with_viewed_files(&[]);
+    app.viewed_files
+        .insert("1".to_string(), ViewedFilesState::Loading);
+    let backend = ratatui::backend::TestBackend::new(90, 10);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+
+    terminal
+        .draw(|frame| draw_diff_files(frame, &app, frame.area()))
+        .expect("draw");
+
+    let lines = buffer_lines(terminal.backend().buffer());
+    assert!(!lines[0].contains("viewed"), "title: {:?}", lines[0]);
+}
+
+#[test]
 fn m_in_diff_file_list_keeps_files_open_instead_of_text_selection_mode() {
     let mut app = AppState::new(SectionKind::PullRequests, vec![test_section()]);
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -23387,6 +23603,34 @@ fn commit_test_diff() -> PullRequestDiff {
 "#,
     )
     .expect("parse commit diff")
+}
+
+fn diff_app_with_viewed_files(files: &[(&str, FileViewedState)]) -> AppState {
+    let mut app = AppState::new(SectionKind::PullRequests, vec![test_section()]);
+    app.show_diff();
+    app.focus_list();
+    app.diffs.insert(
+        "1".to_string(),
+        DiffState::Loaded(PullRequestDiff {
+            files: vec![
+                test_diff_file("src/app.rs", 1, 0),
+                test_diff_file("src/github.rs", 2, 1),
+            ],
+            additions: 3,
+            deletions: 1,
+        }),
+    );
+    app.viewed_files.insert(
+        "1".to_string(),
+        ViewedFilesState::Loaded(PullRequestFileViewedStates {
+            pull_request_id: "PR_test".to_string(),
+            files: files
+                .iter()
+                .map(|(path, state)| (path.to_string(), *state))
+                .collect(),
+        }),
+    );
+    app
 }
 
 fn test_diff_file(path: &str, additions: usize, deletions: usize) -> DiffFile {

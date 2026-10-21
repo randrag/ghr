@@ -135,6 +135,7 @@ Press `?` in the TUI for the live shortcut reference. The top-right status shows
 | `h` / `l` in diff Details | Page down/up through the file diff; at file edges, jump to the next/previous file |
 | `g` / `G` | Jump to top/bottom in list, details, or diff; in conversation details, top clears comment focus and bottom focuses the last comment |
 | `[` / `]` in diff mode | Switch diff files |
+| `Space` in diff mode | Toggle GitHub's **Viewed** mark on the selected file; the file list shows `viewed`, or `changed` when the file changed after you marked it |
 | `/` | In PR/issue lists, open the repo search dialog; in other lists, fuzzy filter the loaded list |
 | `f` | Filter the current PR/issue/inbox section with qualifiers such as `state:closed label:bug author:alice`, `unread reason:mention`, or `done`; empty input or `clear` resets |
 | `S` | Search matching PRs and issues; global PR/issue lists include a Repo field, repo tabs use remembered per-repo fields, and Inbox searches by state, reason, and repo; use `Tab` to switch fields, `↑`/`↓` to move candidates, `Enter` to choose or search, `Ctrl+S` to save reusable PR/issue conditions, and `Ctrl+U` to clear conditions |
