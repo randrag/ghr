@@ -3070,7 +3070,7 @@ fn space_in_diff_details_reports_viewed_state_still_loading() {
 }
 
 #[test]
-fn viewed_toggle_marks_unviewed_file_viewed_before_github_confirms() {
+fn viewed_toggle_requests_mark_but_keeps_list_until_github_confirms() {
     let mut app = diff_app_with_viewed_files(&[]);
 
     let update = app
@@ -3084,19 +3084,18 @@ fn viewed_toggle_marks_unviewed_file_viewed_before_github_confirms() {
             pull_request_id: "PR_test".to_string(),
             path: "src/app.rs".to_string(),
             viewed: true,
-            previous: FileViewedState::Unviewed,
         }
     );
     assert_eq!(
         app.current_viewed_files()
             .and_then(|viewed| viewed.files.get("src/app.rs")),
-        Some(&FileViewedState::Viewed)
+        None
     );
     assert_eq!(app.status, "marking src/app.rs as viewed");
 }
 
 #[test]
-fn viewed_toggle_unmarks_viewed_file() {
+fn viewed_toggle_requests_unmark_for_viewed_file() {
     let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Viewed)]);
 
     let update = app
@@ -3104,16 +3103,15 @@ fn viewed_toggle_unmarks_viewed_file() {
         .expect("viewed update");
 
     assert!(!update.viewed);
-    assert_eq!(update.previous, FileViewedState::Viewed);
     assert_eq!(
         app.current_viewed_files()
             .and_then(|viewed| viewed.files.get("src/app.rs")),
-        Some(&FileViewedState::Unviewed)
+        Some(&FileViewedState::Viewed)
     );
 }
 
 #[test]
-fn viewed_toggle_marks_file_changed_since_viewed_as_viewed_again() {
+fn viewed_toggle_requests_mark_for_file_changed_since_viewed() {
     let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Dismissed)]);
 
     let update = app
@@ -3121,7 +3119,6 @@ fn viewed_toggle_marks_file_changed_since_viewed_as_viewed_again() {
         .expect("viewed update");
 
     assert!(update.viewed);
-    assert_eq!(update.previous, FileViewedState::Dismissed);
 }
 
 #[test]
@@ -3135,7 +3132,7 @@ fn viewed_toggle_waits_for_running_update_on_same_file() {
 }
 
 #[test]
-fn viewed_update_success_keeps_new_state_and_allows_next_toggle() {
+fn viewed_update_success_applies_github_state_and_allows_next_toggle() {
     let mut app = diff_app_with_viewed_files(&[]);
     let update = app
         .begin_selected_diff_file_viewed_toggle()
@@ -3156,7 +3153,27 @@ fn viewed_update_success_keeps_new_state_and_allows_next_toggle() {
 }
 
 #[test]
-fn viewed_update_failure_restores_previous_state_and_shows_error() {
+fn unviewed_update_success_applies_github_state() {
+    let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Viewed)]);
+    let update = app
+        .begin_selected_diff_file_viewed_toggle()
+        .expect("viewed update");
+
+    app.handle_msg(AppMsg::FileViewedUpdated {
+        update,
+        result: Ok(()),
+    });
+
+    assert_eq!(
+        app.current_viewed_files()
+            .and_then(|viewed| viewed.files.get("src/app.rs")),
+        Some(&FileViewedState::Unviewed)
+    );
+    assert_eq!(app.status, "unmarked src/app.rs as viewed");
+}
+
+#[test]
+fn viewed_update_failure_keeps_github_state_and_shows_error() {
     let mut app = diff_app_with_viewed_files(&[("src/app.rs", FileViewedState::Dismissed)]);
     let update = app
         .begin_selected_diff_file_viewed_toggle()
@@ -3177,6 +3194,7 @@ fn viewed_update_failure_restores_previous_state_and_shows_error() {
         app.status
             .starts_with("viewed update failed for src/app.rs")
     );
+    assert!(app.begin_selected_diff_file_viewed_toggle().is_some());
 }
 
 #[test]

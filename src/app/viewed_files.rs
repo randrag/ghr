@@ -13,7 +13,6 @@ pub(super) struct FileViewedUpdate {
     pub(super) pull_request_id: String,
     pub(super) path: String,
     pub(super) viewed: bool,
-    pub(super) previous: FileViewedState,
 }
 
 pub(super) fn viewed_file_count(
@@ -93,7 +92,7 @@ impl AppState {
             return None;
         };
         let path = diff_display_path(file);
-        let viewed_files = match self.viewed_files.get_mut(&item.id) {
+        let viewed_files = match self.viewed_files.get(&item.id) {
             Some(ViewedFilesState::Loaded(viewed_files)) => viewed_files,
             Some(ViewedFilesState::Error(error)) => {
                 self.status = format!(
@@ -113,18 +112,7 @@ impl AppState {
             return None;
         }
 
-        let previous = viewed_files
-            .files
-            .get(&path)
-            .copied()
-            .unwrap_or(FileViewedState::Unviewed);
-        let viewed = previous != FileViewedState::Viewed;
-        let optimistic = if viewed {
-            FileViewedState::Viewed
-        } else {
-            FileViewedState::Unviewed
-        };
-        viewed_files.files.insert(path.clone(), optimistic);
+        let viewed = viewed_files.files.get(&path) != Some(&FileViewedState::Viewed);
         let pull_request_id = viewed_files.pull_request_id.clone();
         self.viewed_file_updates.insert(update_key);
         self.status = file_viewed_running_status(viewed, &path);
@@ -133,7 +121,6 @@ impl AppState {
             pull_request_id,
             path,
             viewed,
-            previous,
         })
     }
 
@@ -146,16 +133,19 @@ impl AppState {
             .remove(&(update.item_id.clone(), update.path.clone()));
         match result {
             Ok(()) => {
-                self.status = file_viewed_success_status(update.viewed, &update.path);
-            }
-            Err(error) => {
                 if let Some(ViewedFilesState::Loaded(viewed_files)) =
                     self.viewed_files.get_mut(&update.item_id)
                 {
-                    viewed_files
-                        .files
-                        .insert(update.path.clone(), update.previous);
+                    let confirmed = if update.viewed {
+                        FileViewedState::Viewed
+                    } else {
+                        FileViewedState::Unviewed
+                    };
+                    viewed_files.files.insert(update.path.clone(), confirmed);
                 }
+                self.status = file_viewed_success_status(update.viewed, &update.path);
+            }
+            Err(error) => {
                 self.show_operation_error_dialog("Viewed Update Failed", &error);
                 self.status = format!(
                     "viewed update failed for {}: {}",
